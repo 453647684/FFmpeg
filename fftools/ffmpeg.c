@@ -138,6 +138,7 @@ static int nb_frames_drop = 0;
 static int64_t decode_error_stat[2];
 
 static int want_sdp = 1;
+static int ready_quit = 0;
 
 static BenchmarkTimeStamps current_time;
 AVIOContext *progress_avio = NULL;
@@ -4615,8 +4616,12 @@ static int transcode_step(void)
         return 0;
     }
 
-    if (ret < 0)
+    if (ret < 0){
+        if(ready_quit){
+            return ret;
+        }
         return ret == AVERROR_EOF ? 0 : ret;
+    }
 
     return reap_filters(0);
 }
@@ -4653,8 +4658,10 @@ static int transcode(void)
 
         /* if 'q' pressed, exits */
         if (stdin_interaction)
-            if (check_keyboard_interaction(cur_time) < 0)
+            if (check_keyboard_interaction(cur_time) < 0){
+                ready_quit = 1;
                 break;
+            }
 
         /* check if there's any stream where output is still needed */
         if (!need_output()) {
@@ -4671,6 +4678,26 @@ static int transcode(void)
         /* dump report by using the output first video and audio streams */
         print_report(0, timer_start, cur_time);
     }
+
+#if HAVE_THREADS
+    if(ready_quit){
+        int flag = 0;
+        for (i = 0; i < nb_input_files; i++){
+            InputFile *f = input_files[i];
+            if (!f || !f->in_thread_queue){
+                continue;
+            }
+            flag = 1;
+            av_thread_message_queue_set_err_send(f->in_thread_queue, AVERROR_EOF);
+        }
+        while(flag){
+            ret = transcode_step();
+            if (ret < 0 && ret == AVERROR_EOF) {
+                break;
+            }
+        }
+    }
+#endif
 #if HAVE_THREADS
     free_input_threads();
 #endif
